@@ -40,7 +40,11 @@ cmd_to_name = {
     CMD_DNS_REQ: 'DNS_REQ',
     CMD_DNS_RESPONSE: 'DNS_RESPONSE',
 }
-    
+
+
+NET_ERRS = [errno.ECONNREFUSED, errno.ETIMEDOUT,
+            errno.EHOSTUNREACH, errno.ENETUNREACH,
+            errno.EHOSTDOWN, errno.ENETDOWN]
 
 
 def _add(l, elem):
@@ -124,6 +128,12 @@ class SockWrapper:
             return  # already connected
         self.rsock.setblocking(False)
         debug3('%r: trying connect to %r\n' % (self, self.connect_to))
+        if socket.inet_aton(self.connect_to[0])[0] == '\0':
+            self.seterr(Exception("Can't connect to %r: "
+                                  "IP address starts with zero\n"
+                                  % (self.connect_to,)))
+            self.connect_to = None
+            return
         try:
             self.rsock.connect(self.connect_to)
             # connected successfully (Linux)
@@ -142,12 +152,21 @@ class SockWrapper:
                 debug3('%r: fixed connect result: %s\n' % (self, e))
             if e.args[0] in [errno.EINPROGRESS, errno.EALREADY]:
                 pass  # not connected yet
+            elif e.args[0] == 0:
+                # connected successfully (weird Linux bug?)
+                # Sometimes Linux seems to return EINVAL when it isn't
+                # invalid.  This *may* be caused by a race condition
+                # between connect() and getsockopt(SO_ERROR) (ie. it
+                # finishes connecting in between the two, so there is no
+                # longer an error).  However, I'm not sure of that.
+                #
+                # I did get at least one report that the problem went away
+                # when we added this, however.
+                self.connect_to = None
             elif e.args[0] == errno.EISCONN:
                 # connected successfully (BSD)
                 self.connect_to = None
-            elif e.args[0] in [errno.ECONNREFUSED, errno.ETIMEDOUT,
-                               errno.EHOSTUNREACH, errno.ENETUNREACH,
-                               errno.EACCES, errno.EPERM]:
+            elif e.args[0] in NET_ERRS + [errno.EACCES, errno.EPERM]:
                 # a "normal" kind of error
                 self.connect_to = None
                 self.seterr(e)
